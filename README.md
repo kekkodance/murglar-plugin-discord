@@ -2,7 +2,7 @@
 
 <img width="459" height="187" alt="{19C53BFE-B37D-4D0A-84BF-FD00AEBE1946}" src="https://github.com/user-attachments/assets/ce205719-fa5e-4ff1-9e71-0ca79f6743da" />  
 
-A Murglar plugin (for Premium/Pass users only) that adds Discord Rich Presence (see music in your status).  
+A Murglar plugin (for **Premium/Pass** users only) that adds Discord Rich Presence (see music in your status).  
 
 > [!IMPORTANT]  
 > __It is the first plugin of it's kind__, as Murglar's Developers doesn't offer any kind of Global API for the app, having to scramble together a solution to fetch track data via Windows SMTC.  
