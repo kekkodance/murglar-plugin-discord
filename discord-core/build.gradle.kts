@@ -22,3 +22,8 @@ dependencies {
     implementation("dev.firstdark.discordrpc:discord-rpc:1.0.4")
     implementation("com.google.code.gson:gson:2.10.1")
 }
+
+tasks.shadowJar {
+    relocate("com.google.gson", "com.badmanners.murglar.lib.discord.gson")
+    relocate("dev.firstdark", "com.badmanners.murglar.lib.discord.firstdark")
+}
