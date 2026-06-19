@@ -7,15 +7,17 @@ import com.google.gson.JsonSyntaxException;
 import java.io.*;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
 public class SMTC4J {
 
     private static final Gson GSON = new GsonBuilder().create();
 
-    private static boolean loaded = false;
+    private static volatile boolean loaded = false;
 
     private static ScheduledExecutorService scheduler = null;
+    private static ScheduledFuture<?> updateTask = null;
 
     private static MediaInfo lastMediaInfo = null;
     private static PlaybackState lastPlaybackState = null;
@@ -24,7 +26,7 @@ public class SMTC4J {
     private static native String getMediaInfo();
     private static native void pressMediaKey(int keyCode);
 
-    public static boolean load() {
+    public static synchronized boolean load() {
         if (loaded) return true;
 
         if (!System.getProperty("os.name").toLowerCase().contains("win"))
@@ -87,8 +89,12 @@ public class SMTC4J {
     public static synchronized void startUpdateScheduler(long intervalMillis) {
         checkIsLoaded();
 
+        if (updateTask != null) {
+            updateTask.cancel(false);
+        }
+
         ScheduledExecutorService exec = getScheduler();
-        exec.scheduleAtFixedRate(() -> {
+        updateTask = exec.scheduleWithFixedDelay(() -> {
             try {
                 updateCache();
             } catch (Exception e) {
@@ -103,13 +109,8 @@ public class SMTC4J {
 
         String info = getMediaInfo();
 
-        if (info.equals("{}"))
+        if (info == null || info.equals("{}"))
             return new MediaInfo("", "", "", 0, "", "");
-
-        if (info.contains("\"error\":")) {
-            System.out.println("Error retrieving media info: " + info);
-            return new MediaInfo("", "", "", 0, "", "");
-        }
 
         try  {
             return GSON.fromJson(info, MediaInfo.class);
@@ -124,13 +125,8 @@ public class SMTC4J {
 
         String state = getPlaybackState();
 
-        if (state.equals("{}"))
+        if (state == null || state.equals("{}"))
             return new PlaybackState(-1, 0);
-
-        if (state.contains("\"error\":")) {
-            System.out.println("Error retrieving playback state: " + state);
-            return new PlaybackState(-1, 0);
-        }
 
         try {
             return GSON.fromJson(state, PlaybackState.class);
