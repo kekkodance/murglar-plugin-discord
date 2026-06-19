@@ -39,6 +39,7 @@ import dev.codeman.smtc4j.SMTC4J
 import dev.codeman.smtc4j.MediaInfo
 import dev.codeman.smtc4j.PlaybackState
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.net.HttpURLConnection
 import java.net.URL
@@ -106,6 +107,13 @@ class DiscordMurglar(
 
     private val rpc = DiscordRpc()
     private val applicationId = "1484288190998384791"
+    private val pollExecutor = Executors.newSingleThreadScheduledExecutor { r ->
+        Thread(r, "DiscordRPC-Poll").apply { isDaemon = true }
+    }
+    private val uploadExecutor = Executors.newSingleThreadScheduledExecutor { r ->
+        Thread(r, "DiscordRPC-Upload").apply { isDaemon = true }
+    }
+    @Volatile private var uploadTask: ScheduledFuture<*>? = null
 
     private val rpcHandler = object : DiscordEventHandler {
         override fun ready(user: User?) {
@@ -123,13 +131,14 @@ class DiscordMurglar(
     }
 
     override suspend fun onCreate() {
-        rpc.init(applicationId, rpcHandler, false)
+        val appId = preferences.getString("discord_app_id", applicationId).ifEmpty { applicationId }
+        rpc.init(appId, rpcHandler, false)
         
         try {
             if (!SMTC4J.isLoaded()) {
                 SMTC4J.load()
                 
-                Executors.newSingleThreadScheduledExecutor().scheduleAtFixedRate({
+                pollExecutor.scheduleWithFixedDelay({
                     try {
                         val mediaInfo = SMTC4J.parsedMediaInfo()
                         val state = SMTC4J.parsedPlaybackState()
@@ -147,10 +156,13 @@ class DiscordMurglar(
     private fun uploadToCatbox(base64: String?): String {
         if (base64.isNullOrEmpty() || !preferences.getBoolean("discord_show_art", true)) return "murglar"
         val userHash = preferences.getString("catbox_user_hash", "")
+        var conn: HttpURLConnection? = null
         try {
             val url = URL("https://catbox.moe/user/api.php")
-            val conn = url.openConnection() as HttpURLConnection
+            conn = url.openConnection() as HttpURLConnection
             conn.requestMethod = "POST"
+            conn.connectTimeout = 5000
+            conn.readTimeout = 10000
             val boundary = "---murglarPluginBoundary"
             conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
             conn.doOutput = true
@@ -172,9 +184,15 @@ class DiscordMurglar(
             
             if (conn.responseCode == 200) {
                 return conn.inputStream.bufferedReader().use { it.readText() }
+            } else {
+                conn.errorStream?.bufferedReader()?.use {
+                    logger.w("DiscordRPC", "Catbox returned ${conn.responseCode}: ${it.readText()}")
+                }
             }
         } catch (e: Exception) {
             logger.e("DiscordRPC", "Catbox upload failed: ${e.message}")
+        } finally {
+            conn?.disconnect()
         }
         return "murglar"
     }
@@ -193,7 +211,8 @@ class DiscordMurglar(
 
     private var lastMediaTitle: String? = null
     private var lastStateCode: Int = -1
-    private var cachedArtUrl: String = "murglar"
+    @Volatile private var cachedArtUrl: String = "murglar"
+    @Volatile private var artUpdated = false
     private var lastUpdateTimeMs: Long = 0
     private var lastPositionMs: Long = 0
 
@@ -221,12 +240,19 @@ class DiscordMurglar(
         val positionDrift = Math.abs(currentPositionMs - expectedPositionMs)
         val seekedOrLooped = isPlaying && lastStateCode == rawStateInt && positionDrift > 3000
 
-        if (!titleChanged && !stateChanged && !seekedOrLooped) {
+        val artChanged = artUpdated.also { if (it) artUpdated = false }
+
+        if (!titleChanged && !stateChanged && !seekedOrLooped && !artChanged) {
             return
         }
 
         if (titleChanged) {
-            cachedArtUrl = uploadToCatbox(media.thumbnailBase64())
+            uploadTask?.cancel(false)
+            val thumbnail = media.thumbnailBase64()
+            uploadTask = uploadExecutor.schedule({
+                cachedArtUrl = uploadToCatbox(thumbnail)
+                artUpdated = true
+            }, 2, TimeUnit.SECONDS)
         }
 
         lastMediaTitle = media.title()
