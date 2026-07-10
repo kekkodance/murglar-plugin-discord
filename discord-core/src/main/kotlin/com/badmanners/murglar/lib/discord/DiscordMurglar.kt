@@ -41,6 +41,7 @@ import dev.codeman.smtc4j.PlaybackState
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -137,19 +138,25 @@ class DiscordMurglar(
         try {
             if (!SMTC4J.isLoaded()) {
                 SMTC4J.load()
-                
-                pollExecutor.scheduleWithFixedDelay({
-                    try {
-                        val mediaInfo = SMTC4J.parsedMediaInfo()
-                        val state = SMTC4J.parsedPlaybackState()
-                        updatePresenceFromSmtc(mediaInfo, state)
-                    } catch (e: Exception) {
-                        logger.e("DiscordRPC", "SMTC Polling Error: ${e.message}")
-                    }
-                }, 0, 1000, TimeUnit.MILLISECONDS)
             }
         } catch (e: Exception) {
             logger.e("DiscordRPC", "SMTC Load Error: ${e.message}")
+        }
+
+        try {
+            pollExecutor.scheduleWithFixedDelay({
+                try {
+                    if (SMTC4J.isLoaded()) {
+                        val mediaInfo = SMTC4J.parsedMediaInfo()
+                        val state = SMTC4J.parsedPlaybackState()
+                        updatePresenceFromSmtc(mediaInfo, state)
+                    }
+                } catch (e: Exception) {
+                    logger.e("DiscordRPC", "SMTC Polling Error: ${e.message}")
+                }
+            }, 0, 1000, TimeUnit.MILLISECONDS)
+        } catch (e: Exception) {
+            logger.e("DiscordRPC", "SMTC Polling Schedule Error: ${e.message}")
         }
     }
 
@@ -212,13 +219,17 @@ class DiscordMurglar(
     private var lastMediaTitle: String? = null
     private var lastStateCode: Int = -1
     @Volatile private var cachedArtUrl: String = "murglar"
-    @Volatile private var artUpdated = false
+    private val artUpdated = AtomicBoolean(false)
+    @Volatile private var uploadGeneration = 0L
     private var lastUpdateTimeMs: Long = 0
     private var lastPositionMs: Long = 0
 
     private fun updatePresenceFromSmtc(media: MediaInfo?, state: PlaybackState?) {
         if (!preferences.getBoolean("discord_enabled", true)) {
-            clearActivity()
+            if (lastMediaTitle != null) {
+                clearActivity()
+                lastMediaTitle = null
+            }
             return
         }
         if (media == null || state == null || media.title().isNullOrEmpty()) {
@@ -238,9 +249,9 @@ class DiscordMurglar(
         val elapsedSinceLastUpdate = System.currentTimeMillis() - lastUpdateTimeMs
         val expectedPositionMs = lastPositionMs + elapsedSinceLastUpdate
         val positionDrift = Math.abs(currentPositionMs - expectedPositionMs)
-        val seekedOrLooped = isPlaying && lastStateCode == rawStateInt && positionDrift > 3000
+        val seekedOrLooped = isPlaying && lastStateCode == rawStateInt && lastUpdateTimeMs != 0L && positionDrift > 3000
 
-        val artChanged = artUpdated.also { if (it) artUpdated = false }
+        val artChanged = artUpdated.compareAndSet(true, false)
 
         if (!titleChanged && !stateChanged && !seekedOrLooped && !artChanged) {
             return
@@ -249,9 +260,13 @@ class DiscordMurglar(
         if (titleChanged) {
             uploadTask?.cancel(false)
             val thumbnail = media.thumbnailBase64()
+            val gen = ++uploadGeneration
             uploadTask = uploadExecutor.schedule({
-                cachedArtUrl = uploadToCatbox(thumbnail)
-                artUpdated = true
+                val url = uploadToCatbox(thumbnail)
+                if (uploadGeneration == gen) {
+                    cachedArtUrl = url
+                    artUpdated.set(true)
+                }
             }, 2, TimeUnit.SECONDS)
         }
 
