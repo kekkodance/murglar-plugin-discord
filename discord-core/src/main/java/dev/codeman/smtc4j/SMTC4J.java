@@ -5,6 +5,7 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonSyntaxException;
 
 import java.io.*;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -18,6 +19,12 @@ public class SMTC4J {
 
     private static ScheduledExecutorService scheduler = null;
     private static ScheduledFuture<?> updateTask = null;
+
+    private static final ExecutorService keyPressExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "SMTC4J-KeyPress");
+        t.setDaemon(true);
+        return t;
+    });
 
     private static MediaInfo lastMediaInfo = null;
     private static PlaybackState lastPlaybackState = null;
@@ -115,7 +122,7 @@ public class SMTC4J {
         try  {
             return GSON.fromJson(info, MediaInfo.class);
         }  catch (JsonSyntaxException e) {
-            System.out.println("Error parsing media info: " + e.getMessage());
+            System.err.println("Error parsing media info: " + e.getMessage());
             return new MediaInfo("", "", "", 0, "", "");
         }
     }
@@ -131,7 +138,7 @@ public class SMTC4J {
         try {
             return GSON.fromJson(state, PlaybackState.class);
         } catch (Exception e) {
-            System.out.println("Error retrieving playback state: " + e.getMessage());
+            System.err.println("Error retrieving playback state: " + e.getMessage());
             return new PlaybackState(-1, 0);
         }
     }
@@ -145,7 +152,7 @@ public class SMTC4J {
     public static void scheduleKeyPress(MediaKey key) {
         checkIsLoaded();
 
-        getScheduler().execute(() -> {
+        keyPressExecutor.execute(() -> {
             try {
                 pressKey(key);
             } catch (Exception e) {
